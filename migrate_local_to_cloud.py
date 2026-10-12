@@ -5,10 +5,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Connect to your existing local database.
+# Connect to the existing local database.
 local_client = chromadb.PersistentClient(path="./chroma_db")
 
-# Connect to your hosted Chroma Cloud database.
+# Connect to Chroma Cloud.
 cloud_client = chromadb.CloudClient(
     api_key=os.environ["CHROMA_API_KEY"],
     tenant=os.environ["CHROMA_TENANT"],
@@ -17,20 +17,26 @@ cloud_client = chromadb.CloudClient(
 
 
 def migrate_collection(collection_name):
+    print(f"\nProcessing collection: {collection_name}")
 
-    # Read the source collection.
+    # Get the existing local collection.
     source = local_client.get_collection(name=collection_name)
 
-    # Create or connect to the destination collection.
+    # Get or create the corresponding cloud collection.
     destination = cloud_client.get_or_create_collection(name=collection_name)
 
-    # Copy records in batches.
+    # Count records before migration.
+    local_count = source.count()
+    cloud_count_before = destination.count()
+
+    print(f"Local records: {local_count}")
+    print(f"Cloud records before migration: {cloud_count_before}")
+
     batch_size = 100
     offset = 0
     migrated = 0
 
     while True:
-
         batch = source.get(
             limit=batch_size,
             offset=offset,
@@ -48,30 +54,37 @@ def migrate_collection(collection_name):
 
         records = {
             "ids": ids,
-            "documents": batch["documents"],
             "embeddings": batch["embeddings"].tolist(),
         }
 
-        # Memory records may not have metadata.
-        metadatas = batch["metadatas"]
+        # Add documents when available.
+        if batch["documents"] is not None:
+            records["documents"] = batch["documents"]
 
-        if metadatas and all(metadata is not None for metadata in metadatas):
-            records["metadatas"] = metadatas
+        # Add metadata when available.
+        if batch["metadatas"] is not None:
+            records["metadatas"] = batch["metadatas"]
 
-        # Preserve IDs, documents, and existing embeddings.
+        # Copy records without deleting local data.
         destination.upsert(**records)
 
         migrated += len(ids)
         offset += len(ids)
 
-    print(f"{collection_name}: migrated {migrated} records.")
+    # Verify the cloud collection after migration.
+    cloud_count_after = destination.count()
+
+    print(f"Records processed: {migrated}")
+    print(f"Cloud records after migration: {cloud_count_after}")
+
+    if cloud_count_after >= local_count:
+        print(f"SUCCESS: {collection_name} migration verified.")
+    else:
+        print(f"WARNING: Check the migration of {collection_name}.")
 
 
 if __name__ == "__main__":
-
-    for name in [
-        "document_intelligence",
-        "user_memory",
-    ]:
-
+    for name in ["document_intelligence", "user_memory"]:
         migrate_collection(name)
+
+    print("\nMigration process finished.")

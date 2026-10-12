@@ -1,6 +1,6 @@
 from sentence_transformers import SentenceTransformer
-import chromadb
 import hashlib
+
 from db_client import chroma_client
 
 # --------------------------------------------------
@@ -11,11 +11,11 @@ embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
 # --------------------------------------------------
-# 2. Connect to the persistent ChromaDB database
+# 2. Connect to the document collection
 # --------------------------------------------------
 
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-
+# Uses Chroma Cloud or the local database,
+# depending on the configuration in db_client.py.
 document_collection = chroma_client.get_or_create_collection(
     name="document_intelligence"
 )
@@ -28,7 +28,7 @@ document_collection = chroma_client.get_or_create_collection(
 
 def create_chunks(document, chunk_size=500, overlap=50):
 
-    # Validate chunk settings
+    # Validate chunk settings.
     if (
         not isinstance(chunk_size, int)
         or isinstance(chunk_size, bool)
@@ -43,22 +43,15 @@ def create_chunks(document, chunk_size=500, overlap=50):
             "must be non-negative and smaller than chunk_size."
         )
 
-    # Get the cleaned text
     text = document["cleaned_text"]
-
-    # Split text into words
     words = text.split()
 
-    # Return no chunks for an empty document
     if not words:
         return []
 
     chunks = []
-
-    # Calculate the distance between chunk starts
     step = chunk_size - overlap
 
-    # Create overlapping chunks
     for start in range(0, len(words), step):
 
         chunk_words = words[start : start + chunk_size]
@@ -77,7 +70,7 @@ def create_chunks(document, chunk_size=500, overlap=50):
             }
         )
 
-        # Stop after processing the final chunk
+        # Stop when the final word has been processed.
         if start + chunk_size >= len(words):
             break
 
@@ -85,13 +78,14 @@ def create_chunks(document, chunk_size=500, overlap=50):
 
 
 # --------------------------------------------------
-# 4. Store chunks and replace outdated chunks safely
+# 4. Store chunks and replace outdated chunks
 # --------------------------------------------------
 
 
 def store_chunks(chunks, file_name=None):
 
-    # Support an empty document when its filename is known
+    # Delete an existing document only when explicitly
+    # requested with its filename and no new chunks.
     if not chunks:
 
         if file_name is not None:
@@ -99,31 +93,32 @@ def store_chunks(chunks, file_name=None):
 
         return 0
 
-    # Identify every document represented in this batch
+    # Identify the documents in this batch.
     file_names = {chunk["file_name"] for chunk in chunks}
 
-    # Prepare all chunk texts
+    # Prepare the chunk texts.
     chunk_texts = [chunk["chunk_text"] for chunk in chunks]
 
-    # Generate embeddings before changing the database
-    embeddings = embedding_model.encode(chunk_texts, show_progress_bar=False).tolist()
+    # Generate embeddings before modifying the database.
+    embeddings = embedding_model.encode(
+        chunk_texts,
+        show_progress_bar=False,
+    ).tolist()
 
     ids = []
     metadatas = []
 
-    # Track new IDs belonging to each document
     new_ids_by_file = {name: set() for name in file_names}
 
-    # Track chunk numbers separately for each filename
     chunk_counts = {name: 0 for name in file_names}
 
-    # Prepare IDs and metadata
+    # Generate stable chunk IDs and metadata.
     for chunk in chunks:
 
-        file_name_for_chunk = chunk["file_name"]
+        current_file = chunk["file_name"]
 
         unique_text = (
-            file_name_for_chunk
+            current_file
             + chunk["content_hash"]
             + str(chunk["start_word"])
             + str(chunk["end_word"])
@@ -132,15 +127,14 @@ def store_chunks(chunks, file_name=None):
         chunk_id = hashlib.sha256(unique_text.encode("utf-8")).hexdigest()
 
         ids.append(chunk_id)
+        new_ids_by_file[current_file].add(chunk_id)
 
-        new_ids_by_file[file_name_for_chunk].add(chunk_id)
-
-        chunk_number = chunk_counts[file_name_for_chunk]
-        chunk_counts[file_name_for_chunk] += 1
+        chunk_number = chunk_counts[current_file]
+        chunk_counts[current_file] += 1
 
         metadatas.append(
             {
-                "file_name": file_name_for_chunk,
+                "file_name": current_file,
                 "file_type": chunk["file_type"],
                 "chunk_number": chunk_number,
                 "start_word": chunk["start_word"],
@@ -149,17 +143,19 @@ def store_chunks(chunks, file_name=None):
             }
         )
 
-    # Record existing IDs before inserting the new version
+    # Remember existing IDs before replacing chunks.
     old_ids_by_file = {}
 
     for name in file_names:
 
-        existing = document_collection.get(where={"file_name": name}, include=[])
+        existing = document_collection.get(
+            where={"file_name": name},
+            include=[],
+        )
 
         old_ids_by_file[name] = set(existing["ids"])
 
     # Insert or update the new chunks first.
-    # If embedding generation fails, the old chunks remain.
     document_collection.upsert(
         ids=ids,
         documents=chunk_texts,
@@ -167,7 +163,7 @@ def store_chunks(chunks, file_name=None):
         metadatas=metadatas,
     )
 
-    # Remove outdated IDs only after the upsert succeeds
+    # Remove old chunks that are no longer needed.
     for name in file_names:
 
         outdated_ids = old_ids_by_file[name] - new_ids_by_file[name]
@@ -183,31 +179,39 @@ def store_chunks(chunks, file_name=None):
 # --------------------------------------------------
 
 
-def retrieve_chunks(question, n_results=3, distance_threshold=1.5):
+def retrieve_chunks(
+    question,
+    n_results=3,
+    distance_threshold=1.5,
+):
 
-    # Validate the requested number of results
+    # Validate the requested number of results.
     if not isinstance(n_results, int) or isinstance(n_results, bool) or n_results <= 0:
         raise ValueError("n_results must be a positive integer.")
 
-    # Validate the distance threshold
+    # Validate the distance threshold.
     if distance_threshold is not None:
-        if distance_threshold < 0:
+
+        if (
+            not isinstance(distance_threshold, (int, float))
+            or isinstance(distance_threshold, bool)
+            or distance_threshold < 0
+        ):
             raise ValueError("distance_threshold must be non-negative or None.")
 
-    # Check whether the database contains chunks
+    # Validate the question.
+    if not isinstance(question, str) or not question.strip():
+        return []
+
     total_chunks = document_collection.count()
 
     if total_chunks == 0:
         return []
 
-    # Validate the question
-    if not isinstance(question, str) or not question.strip():
-        return []
-
-    # Convert the question into an embedding
+    # Embed the user's question.
     question_embedding = embedding_model.encode(question.strip()).tolist()
 
-    # Retrieve the closest matching chunks
+    # Search the document collection.
     results = document_collection.query(
         query_embeddings=[question_embedding],
         n_results=min(n_results, total_chunks),
@@ -220,13 +224,16 @@ def retrieve_chunks(question, n_results=3, distance_threshold=1.5):
 
     retrieved_chunks = []
 
-    # Process the retrieved results
-    for i, chunk_text in enumerate(results["documents"][0]):
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
 
-        distance = results["distances"][0][i]
-        metadata = results["metadatas"][0][i]
+    for chunk_text, metadata, distance in zip(
+        documents,
+        metadatas,
+        distances,
+    ):
 
-        # Apply the optional distance threshold
         if distance_threshold is not None and distance > distance_threshold:
             continue
 

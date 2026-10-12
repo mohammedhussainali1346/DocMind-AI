@@ -1,31 +1,24 @@
 import uuid
 
-import chromadb
 from db_client import chroma_client
 from rag_engine import embedding_model
 
 # --------------------------------------------------
-# 1. Connect to the persistent ChromaDB database
+# 1. Connect to the user memory collection
 # --------------------------------------------------
 
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-
-
-# --------------------------------------------------
-# 2. Create or connect to the user memory collection
-# --------------------------------------------------
-
+# Uses the same configured database as rag_engine.py.
 memory_collection = chroma_client.get_or_create_collection(name="user_memory")
 
 
 # --------------------------------------------------
-# 3. Save a new memory
+# 2. Save a new memory
 # --------------------------------------------------
 
 
 def save_memory(memory_text):
 
-    # Validate the memory.
+    # Validate the memory text.
     if not isinstance(memory_text, str):
         return False
 
@@ -34,10 +27,10 @@ def save_memory(memory_text):
     if not memory_text or memory_text.lower() == "no memory":
         return False
 
-    # Convert the memory into a numerical embedding.
+    # Convert the memory into an embedding.
     memory_embedding = embedding_model.encode(memory_text).tolist()
 
-    # Check whether similar memories already exist.
+    # Check whether a similar memory already exists.
     existing_count = memory_collection.count()
 
     if existing_count > 0:
@@ -50,14 +43,14 @@ def save_memory(memory_text):
 
         distances = results.get("distances", [[]])[0]
 
-        # Skip a memory that is very similar to an existing one.
+        # Skip a very similar memory.
         if distances and distances[0] < 0.25:
             return False
 
-    # Generate a unique ID for the memory.
+    # Generate a unique memory ID.
     memory_id = str(uuid.uuid4())
 
-    # Store the memory and its embedding.
+    # Save the memory and its embedding.
     memory_collection.add(
         ids=[memory_id],
         documents=[memory_text],
@@ -68,7 +61,7 @@ def save_memory(memory_text):
 
 
 # --------------------------------------------------
-# 4. Retrieve memories relevant to a user's message
+# 3. Retrieve memories relevant to a user message
 # --------------------------------------------------
 
 
@@ -82,13 +75,12 @@ def retrieve_memory(user_message, n_results=3):
     if not isinstance(user_message, str) or not user_message.strip():
         return []
 
-    # Check whether any memories exist.
     total_memories = memory_collection.count()
 
     if total_memories == 0:
         return []
 
-    # Convert the message into an embedding.
+    # Embed the user's message.
     query_embedding = embedding_model.encode(user_message.strip()).tolist()
 
     # Search for similar memories.
@@ -103,15 +95,12 @@ def retrieve_memory(user_message, n_results=3):
 
     memories = []
 
-    # Process the search results.
-    documents = results["documents"][0]
-    distances = results["distances"][0]
+    documents = results.get("documents", [[]])[0]
+    distances = results.get("distances", [[]])[0]
 
     for memory, distance in zip(documents, distances):
 
-        # Keep memories within the configured distance.
         if distance < 1.5:
-
             memories.append(
                 {
                     "memory": memory,
