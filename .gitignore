@@ -1,11 +1,20 @@
-
 .env
-.streamlit/secrets.toml
+.env.*
+!.env.example
 
-chroma_db/
+docmind_aivenv/
+venv/
+.venv/
 __pycache__/
 *.py[cod]
 
-.venv/
-venv/
-docmind_aivenv/
+.ipynb_checkpoints/
+.vscode/
+.streamlit/secrets.toml
+
+.DS_Store
+Thumbs.db
+
+# Local database and uploaded documents
+chroma_db/
+uploaded_documents/

@@ -1,11 +1,20 @@
-
-streamlit==1.65.0
-pandas
-pypdf
-python-docx
-python-pptx
-openpyxl
-sentence-transformers
+# Core dependencies
+streamlit
 chromadb
-groq
+PyMuPDF
+numpy
+pandas
+pytesseract
+Pillow
+python-docx
 python-dotenv
+groq
+openpyxl
+python-pptx
+sentence-transformers
+
+# Optional dependencies for additional formats
+xlrd          # Legacy .xls spreadsheets
+odfpy         # .ods spreadsheets
+extract-msg   # Outlook .msg emails
+striprtf      # Improved .rtf extraction
