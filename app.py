@@ -13,8 +13,11 @@ Before running:
 4. Back up your existing ChromaDB folder before changing the index.
 5. For .doc/.ppt/.odt/.odp, install LibreOffice. For .xls install xlrd; for .ods install odfpy; for .msg install extract-msg; for .rtf install striprtf (optional).
 """
+
 import threading
 import time
+
+import shutil
 
 from io import BytesIO
 from collections import Counter
@@ -27,7 +30,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import unicodedata
@@ -677,111 +679,34 @@ st.set_page_config(
 )
 
 st.title("📚 Doc Mind AI")
-st.caption(
-    "Upload documents, index them, and ask questions using RAG."
-)
+st.caption("Upload documents, index them, and ask questions using RAG.")
 
 # ------------------------------------------------------------
 # 1. Load shared resources
 # ------------------------------------------------------------
 
+
 @st.cache_resource
 def get_shared_models_and_client():
-    """Share the embedding model, ChromaDB client, and startup lock."""
+    """Share the embedding model and ChromaDB client."""
     model = SentenceTransformer(EMBEDDING_MODEL_NAME)
     client_db = chromadb.PersistentClient(path=CHROMA_PATH)
-
-    coordinator = {
-        "lock": threading.Lock(),
-        "last_cleanup_at": 0.0,
-    }
-
-    return model, client_db, coordinator
+    return model, client_db
 
 
-embedding_model, chroma_client, startup_coordinator = (
-    get_shared_models_and_client()
-)
+embedding_model, chroma_client = get_shared_models_and_client()
 
-# These are the collection names owned by this application.
-LEGACY_COLLECTION_NAMES = {
-    "document_intelligence",
-    "user_memory",
-    "document_catalog",
-}
-
-UPLOAD_ROOT = Path("uploaded_documents")
-
+UPLOAD_ROOT = Path.home() / "AppData" / "Local" / "DocMindAI" / "uploaded_documents"
 
 # ------------------------------------------------------------
-# 2. Clean up previous visitors when a new session starts
-# ------------------------------------------------------------
-
-def clear_previous_visitors_data():
-    """Delete previous DocMind collections and uploaded files."""
-
-    # Support different ChromaDB versions.
-    existing_collections = chroma_client.list_collections()
-
-    for item in existing_collections:
-        if isinstance(item, str):
-            name = item
-        elif isinstance(item, dict):
-            name = item.get("name", "")
-        else:
-            name = getattr(item, "name", "")
-
-        # Delete only collections belonging to DocMind.
-        is_docmind_collection = (
-            name.startswith("documents_")
-            or name.startswith("memory_")
-            or name.startswith("catalog_")
-            or name in LEGACY_COLLECTION_NAMES
-        )
-
-        if is_docmind_collection:
-            chroma_client.delete_collection(name=name)
-
-    # Remove all previous visitors' uploaded files.
-    if UPLOAD_ROOT.exists():
-        shutil.rmtree(UPLOAD_ROOT)
-
-    
-# ------------------------------------------------------------
-# 3. Run cleanup once for a genuinely new session
+# 2. Initialize a session without deleting other visitors' data
 # ------------------------------------------------------------
 
 if "docmind_session_id" not in st.session_state:
-    with startup_coordinator["lock"]:
-
-        now = time.monotonic()
-        last_cleanup = startup_coordinator["last_cleanup_at"]
-
-        # Visitors arriving within five seconds are treated as
-        # one startup wave, avoiding back-to-back global deletion.
-        should_cleanup = (now - last_cleanup) >= 5
-
-        if should_cleanup:
-            try:
-                clear_previous_visitors_data()
-                startup_coordinator["last_cleanup_at"] = (
-                    time.monotonic()
-                )
-            except Exception as error:
-                st.error(
-                    "Previous visitor data could not be fully cleared. "
-                    "The chatbot has stopped to avoid starting with "
-                    f"uncertain data: {error}"
-                )
-                st.stop()
-
-        # Assign the new session ID only after cleanup succeeds
-        # or this visitor joins an existing startup wave.
-        st.session_state["docmind_session_id"] = uuid.uuid4().hex
-
+    st.session_state["docmind_session_id"] = uuid.uuid4().hex
 
 # ------------------------------------------------------------
-# 4. Create fresh collections for this visitor
+# 3. Create fresh collections for this visitor
 # ------------------------------------------------------------
 
 session_id = st.session_state["docmind_session_id"]
@@ -791,25 +716,21 @@ DOCUMENT_COLLECTION_NAME = f"documents_{session_suffix}"
 MEMORY_COLLECTION_NAME = f"memory_{session_suffix}"
 CATALOG_COLLECTION_NAME = f"catalog_{session_suffix}"
 
-collection = chroma_client.get_or_create_collection(
-    name=DOCUMENT_COLLECTION_NAME
-)
+collection = chroma_client.get_or_create_collection(name=DOCUMENT_COLLECTION_NAME)
 
-memory_collection = chroma_client.get_or_create_collection(
-    name=MEMORY_COLLECTION_NAME
-)
+memory_collection = chroma_client.get_or_create_collection(name=MEMORY_COLLECTION_NAME)
 
 catalog_collection = chroma_client.get_or_create_collection(
     name=CATALOG_COLLECTION_NAME
 )
 
-
 # ------------------------------------------------------------
-# 5. Create this visitor's upload folder
+# 4. Create this visitor's upload folder
 # ------------------------------------------------------------
 
 UPLOAD_DIR = UPLOAD_ROOT / session_id
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 load_dotenv()
 
@@ -1242,8 +1163,7 @@ with st.sidebar:
 
         if deletion_failed:
             st.error(
-                "Some data could not be deleted. "
-                "Please check the error and retry."
+                "Some data could not be deleted. " "Please check the error and retry."
             )
         else:
             shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
@@ -1282,18 +1202,34 @@ st.caption(
 user_question = st.chat_input("Ask a question about your indexed documents...")
 if user_question and catalog_intent(user_question):
     st.session_state["messages"].append({"role": "user", "content": user_question})
+
     with st.chat_message("user"):
         st.markdown(user_question)
-    with st.chat_message("assistant"):
-        with st.spinner("Checking the document catalog..."):
-            answer, sources = answer_catalog_question(catalog_intent(user_question))
-        st.markdown(answer)
-        with st.expander("Sources"):
-            for source in sources:
-                st.write(f"**{source['file_name']}** · document catalog")
-        st.session_state["messages"].append(
-            {"role": "assistant", "content": answer, "sources": sources}
-        )
+
+    try:
+        with st.chat_message("assistant"):
+            with st.spinner("Checking the document catalog..."):
+                answer, sources = answer_catalog_question(catalog_intent(user_question))
+
+            st.markdown(answer)
+
+            with st.expander("Sources"):
+                for source in sources:
+                    st.write(f"**{source['file_name']}** · document catalog")
+
+            st.session_state["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "sources": sources,
+                }
+            )
+
+    except Exception as exc:
+        st.error("Sorry, something went wrong while checking the document catalog.")
+        print(f"Catalog question error: {exc}")
+
+
 elif user_question:
     st.session_state["messages"].append({"role": "user", "content": user_question})
     with st.chat_message("user"):
