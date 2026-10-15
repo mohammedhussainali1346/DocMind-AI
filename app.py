@@ -13,6 +13,8 @@ Before running:
 4. Back up your existing ChromaDB folder before changing the index.
 5. For .doc/.ppt/.odt/.odp, install LibreOffice. For .xls install xlrd; for .ods install odfpy; for .msg install extract-msg; for .rtf install striprtf (optional).
 """
+import threading
+import time
 
 from io import BytesIO
 from collections import Counter
@@ -52,11 +54,15 @@ import streamlit as st
 # 0. CONFIGURATION
 # ============================================================
 
-DOCUMENT_INPUT = None  # Files are supplied through Streamlit uploader
+DOCUMENT_INPUT = None
+
 CHROMA_PATH = "./chroma_db"
-DOCUMENT_COLLECTION_NAME = "document_intelligence"
-MEMORY_COLLECTION_NAME = "user_memory"
-CATALOG_COLLECTION_NAME = "document_catalog"
+
+# Each Streamlit session gets its own collections.
+DOCUMENT_COLLECTION_PREFIX = "documents"
+MEMORY_COLLECTION_PREFIX = "memory"
+CATALOG_COLLECTION_PREFIX = "catalog"
+
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 GROQ_MODEL_NAME = "openai/gpt-oss-20b"
 
@@ -664,30 +670,146 @@ def create_chunks(processed_documents):
 # STREAMLIT APPLICATION
 # ============================================================
 
-st.set_page_config(page_title="DocMind AI", page_icon="📚", layout="wide")
-
-st.title("📚 Doc Mind AI")
-st.caption("Upload documents, index them, and ask questions using RAG.")
-
-UPLOAD_DIR = Path("uploaded_documents")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-
-@st.cache_resource
-def get_models_and_database():
-    """Load the embedding model and persistent ChromaDB collections once."""
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    client_db = chromadb.PersistentClient(path=CHROMA_PATH)
-    docs = client_db.get_or_create_collection(name=DOCUMENT_COLLECTION_NAME)
-    memories = client_db.get_or_create_collection(name=MEMORY_COLLECTION_NAME)
-    catalog = client_db.get_or_create_collection(name=CATALOG_COLLECTION_NAME)
-    return model, client_db, docs, memories, catalog
-
-
-embedding_model, chroma_client, collection, memory_collection, catalog_collection = (
-    get_models_and_database()
+st.set_page_config(
+    page_title="DocMind AI",
+    page_icon="📚",
+    layout="wide",
 )
 
+st.title("📚 Doc Mind AI")
+st.caption(
+    "Upload documents, index them, and ask questions using RAG."
+)
+
+# ------------------------------------------------------------
+# 1. Load shared resources
+# ------------------------------------------------------------
+
+@st.cache_resource
+def get_shared_models_and_client():
+    """Share the embedding model, ChromaDB client, and startup lock."""
+    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    client_db = chromadb.PersistentClient(path=CHROMA_PATH)
+
+    coordinator = {
+        "lock": threading.Lock(),
+        "last_cleanup_at": 0.0,
+    }
+
+    return model, client_db, coordinator
+
+
+embedding_model, chroma_client, startup_coordinator = (
+    get_shared_models_and_client()
+)
+
+# These are the collection names owned by this application.
+LEGACY_COLLECTION_NAMES = {
+    "document_intelligence",
+    "user_memory",
+    "document_catalog",
+}
+
+UPLOAD_ROOT = Path("uploaded_documents")
+
+
+# ------------------------------------------------------------
+# 2. Clean up previous visitors when a new session starts
+# ------------------------------------------------------------
+
+def clear_previous_visitors_data():
+    """Delete previous DocMind collections and uploaded files."""
+
+    # Support different ChromaDB versions.
+    existing_collections = chroma_client.list_collections()
+
+    for item in existing_collections:
+        if isinstance(item, str):
+            name = item
+        elif isinstance(item, dict):
+            name = item.get("name", "")
+        else:
+            name = getattr(item, "name", "")
+
+        # Delete only collections belonging to DocMind.
+        is_docmind_collection = (
+            name.startswith("documents_")
+            or name.startswith("memory_")
+            or name.startswith("catalog_")
+            or name in LEGACY_COLLECTION_NAMES
+        )
+
+        if is_docmind_collection:
+            chroma_client.delete_collection(name=name)
+
+    # Remove all previous visitors' uploaded files.
+    if UPLOAD_ROOT.exists():
+        shutil.rmtree(UPLOAD_ROOT)
+
+    
+# ------------------------------------------------------------
+# 3. Run cleanup once for a genuinely new session
+# ------------------------------------------------------------
+
+if "docmind_session_id" not in st.session_state:
+    with startup_coordinator["lock"]:
+
+        now = time.monotonic()
+        last_cleanup = startup_coordinator["last_cleanup_at"]
+
+        # Visitors arriving within five seconds are treated as
+        # one startup wave, avoiding back-to-back global deletion.
+        should_cleanup = (now - last_cleanup) >= 5
+
+        if should_cleanup:
+            try:
+                clear_previous_visitors_data()
+                startup_coordinator["last_cleanup_at"] = (
+                    time.monotonic()
+                )
+            except Exception as error:
+                st.error(
+                    "Previous visitor data could not be fully cleared. "
+                    "The chatbot has stopped to avoid starting with "
+                    f"uncertain data: {error}"
+                )
+                st.stop()
+
+        # Assign the new session ID only after cleanup succeeds
+        # or this visitor joins an existing startup wave.
+        st.session_state["docmind_session_id"] = uuid.uuid4().hex
+
+
+# ------------------------------------------------------------
+# 4. Create fresh collections for this visitor
+# ------------------------------------------------------------
+
+session_id = st.session_state["docmind_session_id"]
+session_suffix = session_id[:16]
+
+DOCUMENT_COLLECTION_NAME = f"documents_{session_suffix}"
+MEMORY_COLLECTION_NAME = f"memory_{session_suffix}"
+CATALOG_COLLECTION_NAME = f"catalog_{session_suffix}"
+
+collection = chroma_client.get_or_create_collection(
+    name=DOCUMENT_COLLECTION_NAME
+)
+
+memory_collection = chroma_client.get_or_create_collection(
+    name=MEMORY_COLLECTION_NAME
+)
+
+catalog_collection = chroma_client.get_or_create_collection(
+    name=CATALOG_COLLECTION_NAME
+)
+
+
+# ------------------------------------------------------------
+# 5. Create this visitor's upload folder
+# ------------------------------------------------------------
+
+UPLOAD_DIR = UPLOAD_ROOT / session_id
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 load_dotenv()
 
@@ -1100,6 +1222,35 @@ with st.sidebar:
     if st.button("Clear chat history"):
         st.session_state["messages"] = []
         st.rerun()
+
+    st.divider()
+    st.subheader("Privacy and data")
+
+    if st.button("Clear my demo data", type="secondary"):
+        deletion_failed = False
+
+        for name in (
+            DOCUMENT_COLLECTION_NAME,
+            MEMORY_COLLECTION_NAME,
+            CATALOG_COLLECTION_NAME,
+        ):
+            try:
+                chroma_client.delete_collection(name=name)
+            except Exception as error:
+                deletion_failed = True
+                st.error(f"Could not delete {name}: {error}")
+
+        if deletion_failed:
+            st.error(
+                "Some data could not be deleted. "
+                "Please check the error and retry."
+            )
+        else:
+            shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
+            st.session_state["messages"] = []
+            st.session_state.pop("last_upload_results", None)
+            st.success("Your demo data has been cleared.")
+            st.rerun()
 
 if "last_upload_results" in st.session_state:
     st.subheader("Latest upload results")
