@@ -4,6 +4,14 @@ DocMind AI is an AI-powered document intelligence application built with Streaml
 
 The application extracts and preprocesses document text, converts it into numerical embeddings, stores it in a local vector database, and uses a large language model to generate context-aware answers.
 
+## Live Demo
+
+Try the deployed application here:
+
+**[Launch DocMind AI](https://docmind-ai-guchthpjwdrfslzifazwyd.streamlit.app)**
+
+Explore document uploads, semantic search, and AI-powered question answering using Retrieval-Augmented Generation (RAG).
+
 ## Features
 
 - **Multi-format document support:** Process documents, spreadsheets, presentations, images, emails, and notebooks.
