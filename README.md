@@ -2,7 +2,7 @@
 
 DocMind AI is an AI-powered document intelligence application built with Streamlit, Python, ChromaDB, and Groq. It allows users to upload documents, search their content, and ask questions using Retrieval-Augmented Generation (RAG).
 
-The application extracts and preprocesses document text, converts it into numerical embeddings, stores it in a local vector database, and uses a large language model to generate context-aware answers.
+The application extracts and preprocesses document text, converts it into numerical embeddings, stores it in a local vector database, and uses a large language model to generate context-aware answers. 
 
 ## Live Demo
 
