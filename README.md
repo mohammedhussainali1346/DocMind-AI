@@ -2,7 +2,7 @@
 
 DocMind AI is an AI-powered document intelligence application built with Streamlit, Python, ChromaDB, and Groq. It allows users to upload documents, search their content, and ask questions using Retrieval-Augmented Generation (RAG).
 
-The application extracts and preprocesses document text, converts it into numerical embeddings, stores it in a local vector database, and uses a large language model to generate context-aware answers. 
+The application extracts and preprocesses document text, converts it into numerical embeddings, stores it in a vector database, and uses a large language model to generate context-aware answers.
 
 ## Live Demo
 
@@ -21,10 +21,13 @@ Explore document uploads, semantic search, and AI-powered question answering usi
 - **Semantic search:** Retrieve relevant text using Sentence Transformers embeddings and ChromaDB.
 - **RAG-based question answering:** Generate answers using retrieved document context.
 - **Source references:** Display filenames and chunk information associated with retrieved results.
-- **Document catalog:** Keep document-level records to support document discovery and summary requests.
+- **Document catalog:** Maintain document-level records to support document discovery and summary requests.
 - **Conversation history:** Use previous messages to help interpret follow-up questions.
-- **Long-term user memory:** Optionally store relevant, stable user information in a separate collection.
+- **Long-term user memory:** Store selected user information in a separate collection when supported by the application.
 - **Multiple upload options:** Upload individual files, select a folder, or upload a ZIP archive.
+- **Session-specific data isolation:** Use separate document, memory, and catalog collections for each Streamlit session.
+- **Session-specific file storage:** Store uploaded files in a directory associated with the current session.
+- **Session-scoped data clearing:** Clear the current session's data without intentionally clearing every visitor's collections or uploaded files.
 
 ## Supported File Formats
 
@@ -43,6 +46,8 @@ The application supports the following extensions, subject to the availability o
 
 Some formats require additional packages or software. For example, legacy Office formats may require LibreOffice, `.xls` files require `xlrd`, `.ods` files require `odfpy`, and `.msg` files require `extract-msg`.
 
+Actual format support depends on the installed dependencies and the extraction functions available in the current application.
+
 ## Technologies Used
 
 - **Python** — Application logic and document processing
@@ -51,7 +56,7 @@ Some formats require additional packages or software. For example, legacy Office
 - **OpenAI GPT-OSS 20B** (`openai/gpt-oss-20b`) — Configured language model
 - **Sentence Transformers** — Text embedding generation
 - **all-MiniLM-L6-v2** — Embedding model
-- **ChromaDB** — Local vector database
+- **ChromaDB** — Vector database
 - **Tesseract OCR** — Text extraction from supported images and scanned pages
 - **PyMuPDF** — PDF processing
 - **Pandas and NumPy** — Data processing
@@ -63,40 +68,60 @@ Some formats require additional packages or software. For example, legacy Office
 3. **Preprocessing:** Extracted text is cleaned and normalized.
 4. **Chunking:** Text is divided into smaller, overlapping word-based chunks.
 5. **Embedding:** Sentence Transformers converts chunks into numerical vectors.
-6. **Storage:** Chunks, embeddings, and metadata are stored in local ChromaDB collections.
+6. **Storage:** Chunks, embeddings, and metadata are stored in ChromaDB collections.
 7. **Retrieval:** The application searches for relevant document chunks when a question is asked.
-8. **Answer generation:** The retrieved context is sent to Groq's configured language model.
+8. **Answer generation:** Retrieved context is sent to Groq's configured language model.
 9. **Response:** The application displays the generated answer and available source details.
 
 ## Text Chunking Configuration
 
-The current application uses these settings:
+The application uses the following settings, as configured in the current implementation:
 
-- Chunk size: `500` words
-- Chunk overlap: `50` words
-- Step size: `450` words
+- **Chunk size:** `500` words
+- **Chunk overlap:** `50` words
+- **Step size:** `450` words
 
 The overlap helps preserve context between consecutive chunks.
 
 ## Database Configuration
 
-DocMind AI currently uses **local persistent ChromaDB**, not Chroma Cloud.
+DocMind AI uses **local persistent ChromaDB storage** rather than Chroma Cloud.
 
-The application initializes the database with:
+The database path is configured in the application:
 
 ```python
 CHROMA_PATH = "./chroma_db"
 ```
 
-It creates three collections:
+### Session-specific collections
 
-- `document_intelligence` — Stores document chunks and their metadata.
-- `user_memory` — Stores selected long-term user memories.
-- `document_catalog` — Stores document-level information for discovery and summaries.
+The application creates separate collections for each Streamlit session:
 
-The database is created locally in the `chroma_db/` directory. Uploaded files are stored in the `uploaded_documents/` directory during processing.
+- `documents_<session_suffix>` — Stores document chunks and associated metadata.
+- `memory_<session_suffix>` — Stores session-specific memory.
+- `catalog_<session_suffix>` — Stores document-level information used for discovery and summaries.
 
-**Important:** Local database files and uploaded documents are excluded from Git using `.gitignore`. On Streamlit Community Cloud, local files should not be assumed to survive app restarts, redeployments, or instance replacement. Back up any important data before changing or rebuilding the environment.
+The application creates a unique session identifier and uses part of that identifier to distinguish the collections belonging to each session.
+
+This design helps prevent one visitor's session cleanup from unintentionally deleting another visitor's collections.
+
+### Uploaded document storage
+
+Uploaded files are stored in a session-specific directory under the following local data location:
+
+```text
+AppData/Local/DocMindAI/uploaded_documents/<session_id>/
+```
+
+The actual path is constructed from the current user's home directory. Each session has its own upload directory, which helps keep file cleanup scoped to that session.
+
+### Storage limitations
+
+Local persistent storage does not guarantee permanent storage on a hosted platform. On Streamlit Community Cloud, local database contents and uploaded files should not be assumed to survive instance replacement, storage resets, or redeployments.
+
+The application does not currently configure an external persistent vector database.
+
+Back up important local data and use an appropriately configured persistent storage solution if long-term data retention is required.
 
 ## Project Structure
 
@@ -110,8 +135,10 @@ DocMind-AI/
 
 - `app.py` — Main application, document processing, embeddings, retrieval, and question answering.
 - `requirements.txt` — Python dependencies.
-- `.gitignore` — Excludes local secrets, virtual environments, databases, and uploaded documents.
+- `.gitignore` — Excludes configured local secrets, virtual environments, databases, and uploaded documents.
 - `README.md` — Project documentation.
+
+Additional files or directories may exist in the development environment.
 
 ## Prerequisites
 
@@ -122,9 +149,9 @@ Before running the application, install:
 - A Groq API key
 - Python packages listed in `requirements.txt`
 - Tesseract OCR for image and scanned-page text extraction
-- LibreOffice if you need the legacy Office formats handled through conversion
+- LibreOffice if required for legacy Office format conversion
 
-Additional Python packages are listed in `requirements.txt` for specific formats.
+Additional Python packages may be required for specific document formats.
 
 ## Installation and Local Setup
 
@@ -179,34 +206,36 @@ Open the local URL displayed in the terminal to use DocMind AI.
 
 ### Step 1: Push the project to GitHub
 
-Ensure your repository includes:
+Ensure your repository includes the files required by the application, such as:
 
 - `app.py`
 - `requirements.txt`
 - `.gitignore`
 - `README.md`
 
-Commit and push the README:
+After making changes, commit and push them to GitHub:
 
 ```bash
 git add README.md
-git commit -m "Add project README"
-git push
+git commit -m "Update README documentation"
+git push origin main
 ```
 
-### Step 2: Create the Streamlit app
+Run these commands only when you have new changes to commit.
+
+### Step 2: Configure the Streamlit app
 
 1. Visit [Streamlit Community Cloud](https://share.streamlit.io/).
 2. Sign in with your GitHub account.
-3. Create a new app.
+3. Create a new app, or open your existing deployed app.
 4. Select the `mohammedhussainali1346/DocMind-AI` repository.
-5. Select the branch containing your project.
+5. Select the appropriate branch.
 6. Set the main file path to `app.py`.
-7. Deploy the application.
+7. Deploy the application if it has not already been deployed.
 
 ### Step 3: Configure Streamlit secrets
 
-Open your deployed app's settings and locate the Secrets section.
+Open the deployed app's settings and locate the Secrets section.
 
 Add your Groq API key in TOML format:
 
@@ -227,7 +256,8 @@ After deployment:
 3. Upload a small supported document.
 4. Ask a question about its contents.
 5. Check that an answer and available source details appear.
-6. Review the deployment logs if an error occurs.
+6. Test the session-scoped data-clearing feature.
+7. Review the deployment logs if an error occurs.
 
 **Deployment limitation:** The current version uses local ChromaDB storage. It does not configure an external persistent vector database, so local database contents and uploaded files may be lost when the cloud instance is replaced or its storage is reset.
 
@@ -243,6 +273,7 @@ After deployment:
 | No relevant chunks are retrieved | Check extraction, chunk creation, embeddings, and retrieval settings. |
 | ChromaDB errors | Check database initialization and local storage permissions. |
 | Data disappears after redeployment | The current application stores ChromaDB data locally; use a persistent external database if durable cloud storage is required. |
+| Session data is not isolated as expected | Check session identifier initialization, collection names, upload paths, and cleanup logic. |
 
 ## Security and Privacy
 
@@ -251,6 +282,8 @@ After deployment:
 - Avoid uploading confidential documents unless you understand how they are processed and stored.
 - Back up important local database data before making changes.
 - Remember that `.gitignore` does not remove files that Git is already tracking.
+- Session-specific collections and upload directories help separate visitor data, but they should not be treated as a complete security guarantee.
+- Use appropriate authentication, authorization, and persistent storage controls if the application is used for sensitive or production data.
 
 ## Future Improvements
 
@@ -262,6 +295,7 @@ Possible improvements include:
 - Expanded source citations
 - Document deletion and lifecycle management
 - Improved error handling and automated testing
+- Stronger authentication and access controls for production deployments
 
 ## Author
 
